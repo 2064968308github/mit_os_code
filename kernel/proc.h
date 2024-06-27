@@ -104,3 +104,4 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 };
+uint64 count_unused_proc(void);

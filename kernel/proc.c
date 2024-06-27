@@ -5,7 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-
+#include "sysinfo.h"
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -694,3 +694,29 @@ procdump(void)
     printf("\n");
   }
 }
+ uint64 count_unused_proc(void){
+  uint64 count=0;
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++) {
+    
+    if(p->state != UNUSED) ++count;
+  }
+  return count;
+ }
+ uint64 sys_sysinfo(void){
+  uint64 addr;
+  if(argaddr(0, &addr) < 0)
+    return -1;
+  
+  struct sysinfo sinfo;
+  sinfo.freemem=count_memory_unused();
+  sinfo.nproc=count_unused_proc();
+
+  //复制
+  if(copyout(myproc()->pagetable,addr,(char *)&sinfo, sizeof(sinfo)) < 0){
+    return -1;
+  }
+  return 0;
+
+ }
