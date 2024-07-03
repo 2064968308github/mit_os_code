@@ -77,8 +77,17 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    ++(p->cur_ticks);
+    if(p->cur_ticks == p->ticks && p->is_alarming==0 && p->ticks!=0){
+      p->is_alarming=1;
+      memmove(p->alarm_trapframe, p->trapframe, sizeof(struct trapframe));
+      p->trapframe->epc=(uint64)p->handler;
+      p->cur_ticks=0;
+    }
     yield();
+  }
+  
 
   usertrapret();
 }
@@ -113,6 +122,7 @@ usertrapret(void)
   unsigned long x = r_sstatus();
   x &= ~SSTATUS_SPP; // clear SPP to 0 for user mode
   x |= SSTATUS_SPIE; // enable interrupts in user mode
+  
   w_sstatus(x);
 
   // set S Exception Program Counter to the saved user pc.
