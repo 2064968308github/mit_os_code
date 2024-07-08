@@ -22,11 +22,59 @@ struct {
   struct spinlock lock;
   struct run *freelist;
 } kmem;
+struct {
+  struct spinlock lock;
+  int ref_count_mem[PHYSTOP/PGSIZE];
+}ref_count;
+int is_cow_page(pagetable_t pagetable,uint64 va){
+  pte_t *pte;
+  if(va>MAXVA) return 0;
+  if((pte=walk(pagetable,va,0))==0) return 0;
+  if(((*pte) & PTE_V)==0) return 0;
+  if(((*pte) & PTE_C)==0) return 0;
+  else return 1;
+}
+void* cow_allocpage(pagetable_t pagetable,uint64 va){
+  uint64 pa=walkaddr(pagetable,va);
+  if(pa==0) return 0;
+  pte_t *pte=walk(pagetable,va,0);
+  //acquire(&ref_count.lock);
+  if(ref_count.ref_count_mem[pa/PGSIZE]==1){    
+    (*pte)|=PTE_W;
+    (*pte)&=~PTE_C;
+    return (void*)pa;
+  }
+  else{
+    char* mem=kalloc();
+    if(mem==0) return 0;
+    memmove(mem, (char*)pa, PGSIZE);
+    (*pte)&=(~PTE_V);//清除原来的映射，防止remap;
+    if(mappages(pagetable,va,PGSIZE,(uint64)mem,(PTE_FLAGS(*pte) | PTE_W) & ~PTE_C)!=0){
+      kfree(mem);
+      *pte|=PTE_V;
+      return 0;
+    }
+    kfree((char*)PGROUNDDOWN(pa));
+    return mem;
 
+  }
+}
+
+int add_refcount(void*pa)
+{
+   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    return -1;
+  int idx=(uint64)pa/PGSIZE;
+  acquire(&ref_count.lock);
+  ++ref_count.ref_count_mem[idx];
+  release(&ref_count.lock);
+  return 0;
+}
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&ref_count.lock,"ref_count");
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -35,8 +83,10 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
+    ref_count.ref_count_mem[(uint64)p/PGSIZE]=1;
     kfree(p);
+  }
 }
 
 // Free the page of physical memory pointed at by v,
@@ -51,15 +101,26 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
-
-  r = (struct run*)pa;
-
+  
   acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  acquire(&ref_count.lock);
+  --ref_count.ref_count_mem[(uint64)pa/PGSIZE];
+  if(ref_count.ref_count_mem[(uint64)pa/PGSIZE]==0){
+    release(&ref_count.lock);
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
+
+    r = (struct run*)pa;
+
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+    release(&kmem.lock);
+  }
+  else {
+    release(&ref_count.lock);
+    release(&kmem.lock);
+  }
+  
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -72,8 +133,12 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r){
     kmem.freelist = r->next;
+    acquire(&ref_count.lock);//引用计数初始化为1
+    ref_count.ref_count_mem[(uint64)r/PGSIZE]=1;
+    release(&ref_count.lock);
+  }
   release(&kmem.lock);
 
   if(r)
