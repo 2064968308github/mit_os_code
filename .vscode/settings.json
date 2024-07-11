@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "riscv.h": "c",
+        "buf.h": "c",
+        "sleeplock.h": "c"
+    }
+}
